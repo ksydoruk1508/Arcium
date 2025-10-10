@@ -13,7 +13,7 @@ display_logo() {
 | . ` |/ _ \ / _` |    \ \ '__|
 | |\  | (_) | (_| |.___/ / |   
 \_| \_/\___/ \__,_|\____/|_|   
-          
+          Arcium
   TG: https://t.me/NodesN3R 
 EOF
 }
@@ -158,7 +158,7 @@ tr() {
       tools_status) echo "Статус ноды";;
       tools_active) echo "Проверить активность ноды";;
       join_cluster_lbl) echo "Присоединиться к кластеру";;
-      propose_join_lbl) echo "Отправить заявку в кластер";;
+      propose_join_lbl) echo "Отправить приглашение в кластер";;
       check_membership_lbl) echo "Проверить членство ноды в кластере";;
       manage_start) echo "Запустить контейнер";;
       manage_restart) echo "Перезапустить контейнер";;
