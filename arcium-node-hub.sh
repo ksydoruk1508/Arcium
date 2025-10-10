@@ -29,7 +29,7 @@ err()  { echo -e "${clrRed}[ERROR]${clrReset} ${*:-}"; }
 hr()   { echo -e "${clrDim}────────────────────────────────────────────────────────${clrReset}"; }
 
 SCRIPT_NAME="Arcium-Node-Hub"
-SCRIPT_VERSION="0.3.0"
+SCRIPT_VERSION="0.1.0"
 LANG_CHOICE="ru"
 BASE_DIR_DEFAULT="$HOME/arcium-node-setup"
 ENV_FILE_DEFAULT="$HOME/arcium-node-setup/.env"
