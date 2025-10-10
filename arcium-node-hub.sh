@@ -1,4 +1,3 @@
-cat > arcium-node-hub.sh <<'BASH'
 #!/usr/bin/env bash
 # =====================================================================
 #  Arcium-Node-Hub — RU/EN interactive installer/manager (Docker)
@@ -654,6 +653,3 @@ main_menu() {
 }
 
 main_menu
-BASH
-
-chmod +x arcium-node-hub.sh
