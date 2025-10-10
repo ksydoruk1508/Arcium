@@ -170,7 +170,7 @@ tr() {
       cfg_edit_rpc_wss)  echo "RPC_WSS";;
       installing_prereqs) echo "Устанавливаю зависимости (Rust, Solana CLI, Node/Yarn, Anchor)...";;
       prereqs_done) echo "Зависимости установлены";;
-      show_keys) echo "Показать ключи и балансы";;
+      show_keys) echo "Показать адреса и балансы";;
       airdrop_try) echo "Пробую запросить Devnet airdrop...";;
       need_funds) echo "На аккаунтах 0 SOL. Пополните их на Devnet и повторите.";;
       ask_target_node_offset) echo "Введи OFFSET ноды, которую приглашаешь (пусто — использовать свой): " ;;
