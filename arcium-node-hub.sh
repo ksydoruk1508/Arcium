@@ -50,8 +50,8 @@ CLUSTER_OFFSET=${CLUSTER_OFFSET:-}
 
 [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" || true
 
-CFG_FILE="$BASE_DIR/node-config.toml"
-NODE_KP="$BASE_DIR/node-keypair.json"
+CFG_FILE="/root/arcium-node-setup/node-config.toml"
+NODE_KP="/root/arcium-node-setup/.env"
 CALLBACK_KP="$BASE_DIR/callback-kp.json"
 IDENTITY_PEM="$BASE_DIR/identity.pem"
 LOGS_DIR="$BASE_DIR/arx-node-logs"
