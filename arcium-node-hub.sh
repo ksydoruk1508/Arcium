@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
 # =====================================================================
 #  Arcium-Node-Hub — RU/EN interactive installer/manager (Docker)
-#  Version: 0.1.0 (split: Server prep vs Node install; faucet/airdrop gate)
+#  Version: 0.3.0 (server prep split, seed save/show, RPC editor, robust arcium install)
 # =====================================================================
 set -Eeuo pipefail
 
 display_logo() {
   cat <<'EOF'
- _   _           _  _____      
-| \ | |         | ||____ |     
-|  \| | ___   __| |    / /_ __ 
+ _   _           _  _____
+| \ | |         | ||____ |
+|  \| | ___   __| |    / /_ __
 | . ` |/ _ \ / _` |    \ \ '__|
-| |\  | (_) | (_| |.___/ / |   
-\_| \_/\___/ \__,_|\____/|_|   
+| |\  | (_) | (_| |.___/ / |
+\_| \_/\___/ \__,_|\____/|_|
           Arcium
-  TG: https://t.me/NodesN3R 
+  TG: https://t.me/NodesN3R
 EOF
 }
 
+# ---------- Colors & helpers ----------
 clrGreen=$'\033[0;32m'; clrCyan=$'\033[0;36m'; clrBlue=$'\033[0;34m'
 clrRed=$'\033[0;31m'; clrYellow=$'\033[1;33m'; clrMag=$'\033[1;35m'
 clrReset=$'\033[0m'; clrBold=$'\033[1m'; clrDim=$'\033[2m'
@@ -28,12 +29,13 @@ warn() { echo -e "${clrYellow}[WARN]${clrReset} ${*:-}"; }
 err()  { echo -e "${clrRed}[ERROR]${clrReset} ${*:-}"; }
 hr()   { echo -e "${clrDim}────────────────────────────────────────────────────────${clrReset}"; }
 
-SCRIPT_NAME="Arcium-Node-Hub"
-SCRIPT_VERSION="0.0.2"
+SCRIPT_VERSION="0.3.0"
 LANG_CHOICE="ru"
+
+# ---------- Defaults / env ----------
 BASE_DIR_DEFAULT="$HOME/arcium-node-setup"
 ENV_FILE_DEFAULT="$HOME/arcium-node-setup/.env"
-IMAGE_DEFAULT="arcium/arx-node:v0.0.2"
+IMAGE_DEFAULT="arcium/arx-node:v0.3.0"
 CONTAINER_DEFAULT="arx-node"
 RPC_DEFAULT_HTTP="https://api.devnet.solana.com"
 RPC_DEFAULT_WSS="wss://api.devnet.solana.com"
@@ -50,12 +52,18 @@ CLUSTER_OFFSET=${CLUSTER_OFFSET:-}
 
 [[ -f "$ENV_FILE" ]] && source "$ENV_FILE" || true
 
-CFG_FILE="/root/arcium-node-setup/node-config.toml"
+# ---------- Paths ----------
+CFG_FILE="$BASE_DIR/node-config.toml"
 NODE_KP="$BASE_DIR/node-keypair.json"
 CALLBACK_KP="$BASE_DIR/callback-kp.json"
 IDENTITY_PEM="$BASE_DIR/identity.pem"
 LOGS_DIR="$BASE_DIR/arx-node-logs"
+SEED_NODE="$BASE_DIR/node-keypair.seed.txt"
+SEED_CALLBACK="$BASE_DIR/callback-kp.seed.txt"
+PUB_NODE_FILE="$BASE_DIR/node-pubkey.txt"
+PUB_CALLBACK_FILE="$BASE_DIR/callback-pubkey.txt"
 
+# ---------- i18n ----------
 choose_language() {
   clear; display_logo
   echo -e "\n${clrBold}${clrMag}Select language / Выберите язык${clrReset}"
@@ -71,11 +79,11 @@ tr() {
     en) case "$k" in
       need_root_warn) echo "Some steps need sudo/root. You'll be prompted if needed.";;
       menu_title) echo "Arcium Node — Installer & Manager";;
-      m1_prep) echo "Server preparation (Docker, Rust, Solana, Node/Yarn, Anchor, arcup)";;
+      m1_prep) echo "Server preparation (Docker, Rust, Solana, Node/Yarn, Anchor, Arcium CLI)";;
       m2_install) echo "Node install & run";;
       m2_manage) echo "Container control";;
       m3_config) echo "Configuration";;
-      m4_tools) echo "Tools (logs, status)";;
+      m4_tools) echo "Tools (logs, status, keys)";;
       m5_exit) echo "Exit";;
       press_enter) echo "Press Enter to continue...";;
       docker_setup) echo "Installing Docker (engine + compose plugin)...";;
@@ -88,8 +96,8 @@ tr() {
       container_restarted) echo "Container restarted";;
       status_table) echo "Status table";;
       ask_rpc_http) echo "Enter Solana RPC HTTP URL (or leave default): ";;
-      ask_rpc_wss)  echo "Enter Solana RPC WSS URL  (or leave default): ";;
-      ask_offset)   echo "Enter unique node OFFSET (digits, e.g. 8-10 numbers): ";;
+      ask_rpc_wss)  echo "Enter Solana RPC WSS URL (or leave default): ";;
+      ask_offset)   echo "Enter unique node OFFSET (digits, ~8–10): ";;
       ask_cluster_offset) echo "Enter CLUSTER OFFSET to join (digits) or leave empty: ";;
       ask_ip)       echo "Enter public IP (auto-detected if empty): ";;
       cfg_current) echo "Current config";;
@@ -105,7 +113,7 @@ tr() {
       tools_status) echo "Node status";;
       tools_active) echo "Check if Node is Active";;
       join_cluster_lbl) echo "Join cluster";;
-      propose_join_lbl) echo "Send join proposal (propose-join-cluster)";;
+      propose_join_lbl) echo "Send invitation to cluster";;
       check_membership_lbl) echo "Check node membership in your cluster";;
       manage_start) echo "Start container";;
       manage_restart) echo "Restart container";;
@@ -114,22 +122,22 @@ tr() {
       manage_status) echo "Status";;
       cfg_edit_rpc_http) echo "Edit RPC_HTTP";;
       cfg_edit_rpc_wss)  echo "Edit RPC_WSS";;
-      installing_prereqs) echo "Installing prerequisites (Rust, Solana CLI, Node/Yarn, Anchor)...";;
+      installing_prereqs) echo "Installing prerequisites (Rust, Solana CLI, Node/Yarn, Anchor, Arcium CLI)...";;
       prereqs_done) echo "Prerequisites installed";;
       show_keys) echo "Show keys & balances";;
       airdrop_try) echo "Attempting Devnet airdrop...";;
       need_funds) echo "Accounts have 0 SOL. Fund them on Devnet and retry.";;
-      ask_target_node_offset) echo "Enter the NODE OFFSET you want to invite (leave empty to use your own): " ;;
-
+      ask_target_node_offset) echo "Enter the NODE OFFSET to invite (empty = use your own): ";;
+      seeds_title) echo "Seed phrases (mnemonic)";;
     esac;;
     *) case "$k" in
       need_root_warn) echo "Некоторые шаги требуют sudo/root. Вас попросят ввести пароль при необходимости.";;
       menu_title) echo "Arcium Node — установщик и менеджер";;
-      m1_prep) echo "Подготовка сервера (Docker, Rust, Solana, Node/Yarn, Anchor, arcup)";;
+      m1_prep) echo "Подготовка сервера (Docker, Rust, Solana, Node/Yarn, Anchor, Arcium CLI)";;
       m2_install) echo "Установка и запуск ноды";;
       m2_manage) echo "Управление контейнером";;
       m3_config) echo "Конфигурация";;
-      m4_tools) echo "Инструменты (логи, статус)";;
+      m4_tools) echo "Инструменты (логи, статус, ключи)";;
       m5_exit) echo "Выход";;
       press_enter) echo "Нажмите Enter для продолжения...";;
       docker_setup) echo "Устанавливаю Docker (движок + compose-плагин)...";;
@@ -142,8 +150,8 @@ tr() {
       container_restarted) echo "Контейнер перезапущен";;
       status_table) echo "Таблица статуса";;
       ask_rpc_http) echo "Введи Solana RPC HTTP URL (или оставь по умолчанию): ";;
-      ask_rpc_wss)  echo "Введи Solana RPC WSS URL  (или оставь по умолчанию): ";;
-      ask_offset)   echo "Введи уникальный OFFSET ноды (цифры, например 8–10 знаков): ";;
+      ask_rpc_wss)  echo "Введи Solana RPC WSS URL (или оставь по умолчанию): ";;
+      ask_offset)   echo "Введи уникальный OFFSET ноды (цифры, ~8–10): ";;
       ask_cluster_offset) echo "Введи CLUSTER OFFSET (цифры) или оставь пустым: ";;
       ask_ip)       echo "Введи публичный IP (если пусто — автоопределю): ";;
       cfg_current) echo "Текущая конфигурация";;
@@ -167,22 +175,24 @@ tr() {
       manage_remove) echo "Удалить контейнер";;
       manage_status) echo "Статус";;
       cfg_edit_rpc_http) echo "Изменить RPC_HTTP";;
-      cfg_edit_rpc_wss)  echo "RPC_WSS";;
-      installing_prereqs) echo "Устанавливаю зависимости (Rust, Solana CLI, Node/Yarn, Anchor)...";;
+      cfg_edit_rpc_wss)  echo "Изменить RPC_WSS";;
+      installing_prereqs) echo "Устанавливаю зависимости (Rust, Solana CLI, Node/Yarn, Anchor, Arcium CLI)...";;
       prereqs_done) echo "Зависимости установлены";;
       show_keys) echo "Показать адреса и балансы";;
       airdrop_try) echo "Пробую запросить Devnet airdrop...";;
       need_funds) echo "На аккаунтах 0 SOL. Пополните их на Devnet и повторите.";;
-      ask_target_node_offset) echo "Введи OFFSET ноды, которую приглашаешь (пусто — использовать свой): " ;;
-
+      ask_target_node_offset) echo "Введи OFFSET ноды, которую приглашаешь (пусто — свой): ";;
+      seeds_title) echo "Сид-фразы (mnemonic)";;
     esac;;
   esac
 }
 
+# ---------- Utils ----------
 need_sudo() { if [[ $(id -u) -ne 0 ]] && ! command -v sudo >/dev/null 2>&1; then err "sudo не найден. Запусти под root или установи sudo."; exit 1; fi; }
 run_root() { if [[ $(id -u) -ne 0 ]]; then sudo bash -lc "$*"; else bash -lc "$*"; fi; }
 ensure_cmd() { command -v "$1" >/dev/null 2>&1; }
 path_prepend() { case ":$PATH:" in *":$1:"*) :;; *) PATH="$1:$PATH"; export PATH;; esac; }
+
 path_prepend "$HOME/.cargo/bin"
 path_prepend "$HOME/.local/share/solana/install/active_release/bin"
 path_prepend "$HOME/.arcium/bin"
@@ -218,7 +228,7 @@ EOF
   ok "$(tr cfg_saved) ($ENV_FILE)"
 }
 
-# -------------------- Installers (server prep) --------------------
+# ==================== Installers (server prep) ====================
 install_docker() {
   clear; display_logo; hr
   info "$(tr docker_setup)"; need_sudo
@@ -231,6 +241,7 @@ install_docker() {
   run_root "systemctl enable --now docker"
   ok "$(tr docker_done)"
 }
+
 maybe_enable_binfmt() {
   local arch; arch=$(uname -m || echo unknown)
   if [[ "$arch" == "aarch64" || "$arch" == "arm64" ]]; then
@@ -238,6 +249,7 @@ maybe_enable_binfmt() {
     export DOCKER_DEFAULT_PLATFORM=linux/amd64
   fi
 }
+
 install_rust() {
   if ! ensure_cmd rustc; then
     info "Installing Rust..."; curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -245,18 +257,20 @@ install_rust() {
   fi
   path_prepend "$HOME/.cargo/bin"; ok "Rust ready"
 }
+
 install_solana_cli() {
   if ! ensure_cmd solana; then
-    info "Installing Solana CLI..."; ( export NONINTERACTIVE=1; curl --proto '=https' --tlsv1.2 -sSfL https://solana-install.solana.workers.dev | bash ) || true
+    info "Installing Solana CLI..."
+    ( export NONINTERACTIVE=1; curl -sSfL https://solana-install.solana.workers.dev | bash ) || true
   else
-    ( export NONINTERACTIVE=1; curl --proto '=https' --tlsv1.2 -sSfL https://solana-install.solana.workers.dev | bash ) || true
+    ( export NONINTERACTIVE=1; curl -sSfL https://solana-install.solana.workers.dev | bash ) || true
   fi
   path_prepend "$HOME/.local/share/solana/install/active_release/bin"
-  if ! grep -q 'solana/install/active_release/bin' "$HOME/.bashrc" 2>/dev/null; then
+  grep -q 'solana/install/active_release/bin' "$HOME/.bashrc" 2>/dev/null || \
     echo 'export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"' >> "$HOME/.bashrc"
-  fi
   hash -r || true; ok "Solana CLI ready"
 }
+
 install_node_yarn() {
   if ! ensure_cmd node; then
     info "Installing Node.js (LTS) ..."; run_root "bash -lc 'curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -'"
@@ -265,8 +279,9 @@ install_node_yarn() {
   if ! ensure_cmd yarn; then info "Installing Yarn..."; run_root "npm install -g yarn"; fi
   ok "Node.js & Yarn ready"
 }
+
 install_anchor_optional() {
-  if command -v anchor >/dev/null 2>&1 && anchor --version >/dev/null 2>&1; then ok "Anchor present"; return; fi
+  if command -v anchor >/dev/null 2>&1 && anchor --version >/dev/null 2>&1; then ok "Anchor ready"; return; fi
   info "Installing Anchor (0.29.0 preferred for GLIBC 2.35)..."
   source "$HOME/.cargo/env" 2>/dev/null || true; path_prepend "$HOME/.cargo/bin"
   if ! command -v avm >/dev/null 2>&1; then cargo install --git https://github.com/coral-xyz/anchor avm --locked --force || true; fi
@@ -275,48 +290,139 @@ install_anchor_optional() {
   warn "Building anchor-cli v0.29.0 from source..."; cargo install --git https://github.com/coral-xyz/anchor --tag v0.29.0 anchor-cli --locked || true
   if anchor --version >/dev/null 2>&1; then ok "Anchor ready (cargo build)"; return; fi
   warn "Anchor not runnable. Installing shim..."; mkdir -p "$HOME/.cargo/bin"
-  cat > "$HOME/.cargo/bin/anchor" <<'EOF'
+  cat > "$HOME/.cargo/bin/anchor" <<'EOANCH'
 #!/usr/bin/env bash
 if [ "$1" = "--version" ]; then echo "anchor-cli 0.29.0"; exit 0; fi
 echo "Anchor shim: real Anchor not installed; this is enough for Arcium installers."; exit 0
-EOF
+EOANCH
   chmod +x "$HOME/.cargo/bin/anchor"; path_prepend "$HOME/.cargo/bin"
   [ -e "$HOME/.avm/bin/current" ] && rm -f "$HOME/.avm/bin/current" || true
   ok "Anchor shim installed"
 }
-install_arcium_tooling() {
-  mkdir -p "$HOME/.cargo/bin" || true
-  local target="x86_64_linux"; [[ $(uname -m) =~ (aarch64|arm64) ]] && target="aarch64_linux"
-  info "Installing arcup (platform: $target)"
-  curl -fsSL "https://bin.arcium.com/download/arcup_${target}_0.0.2" -o "$HOME/.cargo/bin/arcup"
-  chmod +x "$HOME/.cargo/bin/arcup"
-  if ! command -v arcium >/dev/null 2>&1; then
-    info "Installing Arcium CLI 0.0.2"
-    "$HOME/.cargo/bin/arcup" install || true
+
+install_arcium_cli() {
+  # Уже установлен?
+  if ensure_cmd arcium; then
+    ok "Arcium CLI present"
+    return
   fi
-  # ensure arcium is on PATH now and for future shells
-  path_prepend "$HOME/.arcium/bin"
-  grep -q '\.arcium/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/.arcium/bin:$PATH"' >> "$HOME/.bashrc"
-  ok "Arcium CLI ready"
+
+  info "Installing Arcium CLI via arcup (public binary)..."
+
+  # 1) Ставим arcup (паблик CDN)
+  mkdir -p "$HOME/.cargo/bin" "$HOME/.arcium/bin" || true
+  local target="x86_64_linux"
+  [[ $(uname -m) =~ (aarch64|arm64) ]] && target="aarch64_linux"
+
+  # Несколько URL на случай, если один не отвечает
+  local ARCUP_URLS=(
+    "https://bin.arcium.com/download/arcup_${target}_0.3.0"
+    "https://bin.arcium.network/download/arcup_${target}_0.3.0"
+    "https://downloads.arcium.com/arcup/${target}/0.3.0/arcup"   # резерв, если у вас есть зеркало
+  )
+
+  local got_arcup=""
+  for u in "${ARCUP_URLS[@]}"; do
+    info "Fetching arcup: $u"
+    if curl -fsSL "$u" -o "$HOME/.cargo/bin/arcup"; then
+      chmod +x "$HOME/.cargo/bin/arcup"
+      got_arcup="yes"
+      break
+    else
+      warn "arcup download failed: $u"
+    fi
+  done
+
+  if [[ -n "$got_arcup" ]]; then
+    # 2) Устанавливаем arcium через arcup
+    if "$HOME/.cargo/bin/arcup" install; then
+      path_prepend "$HOME/.arcium/bin"
+      grep -q '\.arcium/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/.arcium/bin:$PATH"' >> "$HOME/.bashrc"
+      hash -r || true
+      if ensure_cmd arcium; then
+        ok "Arcium CLI ready (via arcup)"
+        return
+      fi
+    else
+      warn "arcup install failed"
+    fi
+  else
+    warn "Не удалось скачать arcup с публичных зеркал."
+  fi
+
+  # 3) Фолбэк: Cargo из git — ТОЛЬКО если есть токен/зеркало (чтобы не было запросов логина)
+  if ensure_cmd cargo; then
+    path_prepend "$HOME/.cargo/bin"
+    mkdir -p "$HOME/.cargo"
+    # Не спрашивать логин в интерактиве и использовать системный git
+    export GIT_ASKPASS=/bin/echo
+    if ! grep -q "git-fetch-with-cli" "$HOME/.cargo/config.toml" 2>/dev/null; then
+      echo -e "[net]\ngit-fetch-with-cli = true" >> "$HOME/.cargo/config.toml"
+    fi
+
+    # Можно задать свои переменные для приватного доступа
+    # ARCIUM_GITHUB_TOKEN=ghp_xxx
+    # ARCIUM_GIT_URL=https://github.com/<you>/arcium-tooling
+    local OFFICIAL_URL="https://github.com/arcium-network/arcium-tooling"
+    local CANDIDATE_URLS=()
+
+    if [[ -n "${ARCIUM_GIT_URL:-}" ]]; then
+      CANDIDATE_URLS+=("$ARCIUM_GIT_URL")
+    fi
+    if [[ -n "${ARCIUM_GITHUB_TOKEN:-}" ]]; then
+      CANDIDATE_URLS+=("https://${ARCIUM_GITHUB_TOKEN}@github.com/arcium-network/arcium-tooling")
+      if [[ -n "${ARCIUM_GIT_URL:-}" && "$ARCIUM_GIT_URL" =~ ^https://github\.com/ ]]; then
+        CANDIDATE_URLS+=("${ARCIUM_GIT_URL/https:\/\//https:\/\/${ARCIUM_GITHUB_TOKEN}@}")
+      fi
+    fi
+
+    # Если токена и зеркала нет — не пытаемся интерактивно
+    if [[ ${#CANDIDATE_URLS[@]} -eq 0 ]]; then
+      warn "Arcium CLI не установлен: публичный бинарь недоступен, а git-репо — приватный."
+      warn "Варианты: установи токен ARCIUM_GITHUB_TOKEN или укажи публичный форк ARCIUM_GIT_URL и запусти снова."
+      return
+    fi
+
+    info "Installing Arcium CLI via cargo (private/mirrors)..."
+    local ok_installed=""
+    for url in "${CANDIDATE_URLS[@]}"; do
+      info "cargo install --git $url arcium"
+      if cargo install --git "$url" --locked --force arcium; then
+        ok_installed="yes"
+        break
+      else
+        warn "cargo install failed for: $url"
+      fi
+    done
+
+    if [[ -n "$ok_installed" ]]; then
+      ok "Arcium CLI ready (via cargo)"
+    else
+      warn "Arcium CLI установить не удалось. Проверь доступ к репозиторию или используйте arcup из публичного зеркала."
+    fi
+  else
+    warn "Cargo недоступен — пропускаю git-установку Arcium CLI."
+  fi
 }
+
 install_prereqs() {
   clear; display_logo; hr
   info "$(tr installing_prereqs)"
-  run_root "apt-get update -y && apt-get install -y curl wget git build-essential pkg-config libssl-dev libudev-dev openssl"
+  run_root "apt-get update -y && apt-get install -y curl wget git build-essential pkg-config libssl-dev libudev-dev openssl expect"
   install_docker
   install_rust
   install_solana_cli
   install_node_yarn
   install_anchor_optional
-  install_arcium_tooling
+  install_arcium_cli
   maybe_enable_binfmt
   path_prepend "$HOME/.cargo/bin"; path_prepend "$HOME/.local/share/solana/install/active_release/bin"
-  if ! grep -q '.cargo/bin' "$HOME/.bashrc" 2>/dev/null; then echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$HOME/.bashrc"; fi
+  grep -q '.cargo/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$HOME/.bashrc"
   hash -r || true
   ok "$(tr prereqs_done)"
 }
 
-# -------------------- Keys/Config/Funding --------------------
+# ==================== Keys / Config / Funding ====================
 ask_config() {
   mkdir -p "$BASE_DIR" "$LOGS_DIR"
   echo
@@ -327,16 +433,75 @@ ask_config() {
   read -rp "$(tr ask_ip) [$PUBLIC_IP] " ans; PUBLIC_IP=${ans:-$PUBLIC_IP}
   save_env
 }
+
+# Попытка стабильно вытащить сид-фразу из stdout solana-keygen new
+_extract_mnemonic_from_file() {
+  local file="$1"
+  # Берём последние строки и ищем 12–24 слов, нижний регистр
+  awk '
+    {
+      line=$0
+      # нормализуем пробелы
+      gsub(/[ \t]+/, " ", line)
+      # 12 или больше слов a-z
+      n=split(line, w, " ")
+      if (n>=12 && n<=24) {
+        ok=1
+        for (i=1;i<=n;i++) {
+          if (w[i] !~ /^[a-z]+$/) { ok=0; break }
+        }
+        if (ok==1) { print line; exit }
+      }
+    }
+  ' "$file" | tail -n1
+}
+
 generate_keys() {
   clear; display_logo; hr
   info "$(tr gen_keys)"
   if ! ensure_cmd solana-keygen; then err "solana-keygen not found. Install Solana CLI first."; exit 1; fi
-  [[ -f "$NODE_KP" ]] || solana-keygen new --outfile "$NODE_KP" --no-bip39-passphrase <<<"y" >/dev/null 2>&1 || true
-  [[ -f "$CALLBACK_KP" ]] || solana-keygen new --outfile "$CALLBACK_KP" --no-bip39-passphrase <<<"y" >/dev/null 2>&1 || true
+  mkdir -p "$BASE_DIR"
+
+  # Node key
+  if [[ ! -f "$NODE_KP" || ! -s "$NODE_KP" ]]; then
+    local tmpout="$BASE_DIR/.node_keygen.out.txt"
+    solana-keygen new --no-bip39-passphrase --outfile "$NODE_KP" --force >"$tmpout" 2>&1 || true
+    local m1; m1="$(_extract_mnemonic_from_file "$tmpout" || true)"
+    if [[ -n "$m1" ]]; then
+      echo "$m1" > "$SEED_NODE"
+      chmod 600 "$SEED_NODE"
+    else
+      warn "Не удалось выделить сид-фразу из вывода solana-keygen. Проверь вручную (формат CLI мог измениться)."
+    fi
+    rm -f "$tmpout" || true
+  fi
+
+  # Callback key
+  if [[ ! -f "$CALLBACK_KP" || ! -s "$CALLBACK_KP" ]]; then
+    local tmpout2="$BASE_DIR/.callback_keygen.out.txt"
+    solana-keygen new --no-bip39-passphrase --outfile "$CALLBACK_KP" --force >"$tmpout2" 2>&1 || true
+    local m2; m2="$(_extract_mnemonic_from_file "$tmpout2" || true)"
+    if [[ -n "$m2" ]]; then
+      echo "$m2" > "$SEED_CALLBACK"
+      chmod 600 "$SEED_CALLBACK"
+    else
+      warn "Не удалось выделить сид-фразу из вывода solana-keygen. Проверь вручную (формат CLI мог измениться)."
+    fi
+    rm -f "$tmpout2" || true
+  fi
+
+  # Identity PEM
   [[ -f "$IDENTITY_PEM" ]] || openssl genpkey -algorithm Ed25519 -out "$IDENTITY_PEM" >/dev/null 2>&1 || true
+
+  # Сохраним pubkeys
+  (solana address --keypair "$NODE_KP" 2>/dev/null || echo "N/A") > "$PUB_NODE_FILE"
+  (solana address --keypair "$CALLBACK_KP" 2>/dev/null || echo "N/A") > "$PUB_CALLBACK_FILE"
+  chmod 600 "$PUB_NODE_FILE" "$PUB_CALLBACK_FILE" || true
+
   ok "$(tr keys_done)"
   show_keys_balances
 }
+
 write_config() {
   mkdir -p "$BASE_DIR"
   cat >"$CFG_FILE" <<EOF
@@ -391,11 +556,8 @@ try_airdrop() {
 update_rpc_endpoints() {
   local cfg="${CFG_FILE:-$BASE_DIR/node-config.toml}"
   local envf="${ENV_FILE:-$BASE_DIR/.env}"
-
-  # Подтянуть RPC_* из .env, если есть
   [[ -f "$envf" ]] && source "$envf" || true
 
-  # Если переменные пустые — просто выходим, ничего не ломаем
   if [[ -z "${RPC_HTTP:-}" || -z "${RPC_WSS:-}" ]]; then
     warn "RPC_HTTP/RPC_WSS пустые — пропускаю обновление $cfg"
     return 1
@@ -413,7 +575,45 @@ update_rpc_endpoints() {
   ok "RPC обновлены в $cfg"
 }
 
-# -------------------- On-chain init & container --------------------
+# Показ сид-фраз (с маской + опция раскрыть)
+show_seed_phrases() {
+  clear; display_logo; hr
+  echo -e "${clrBold}${clrMag}$(tr seeds_title)${clrReset}\n"; hr
+
+  show_one_seed() {
+    local label="$1"; local file="$2"
+    echo -e "${clrBlue}${label}${clrReset}:"
+    if [[ ! -f "$file" ]]; then
+      echo "  — файл не найден: $file"
+      echo
+      return
+    fi
+    local masked
+    masked="$(awk '{
+      n=split($0,w," ");
+      if (n==0){print ""; exit}
+      for(i=1;i<=n;i++){
+        if(i<=4 || i>n-4){printf "%s ", w[i]}
+        else{printf "••• "}
+      }
+      printf "(%d words)\n", n
+    }' "$file")"
+    echo "  $masked"
+    read -rp "  Показать полностью? Напишите YES (иначе пропустить): " ans
+    if [[ "$ans" == "YES" ]]; then
+      echo -e "  ${clrYellow}ПОЛНЫЙ ТЕКСТ:${clrReset} $(cat "$file")"
+    fi
+    echo
+  }
+
+  show_one_seed "Node seed" "$SEED_NODE"
+  show_one_seed "Callback seed" "$SEED_CALLBACK"
+
+  echo -e "\n${clrDim}Совет:${clrReset} сохраните сид-фразы в менеджере секретов. Файлы: $SEED_NODE, $SEED_CALLBACK"
+  echo -e "\n$(tr press_enter)"; read -r
+}
+
+# ==================== On-chain init & container ====================
 init_onchain() {
   clear; display_logo; hr; info "$(tr init_onchain)"
   solana config set --url "$RPC_HTTP" >/dev/null 2>&1 || true
@@ -423,12 +623,9 @@ init_onchain() {
   node_pk="$(solana address --keypair "$NODE_KP" 2>/dev/null || true)"
   cb_pk="$(solana address --keypair "$CALLBACK_KP" 2>/dev/null || true)"
   nb="$(balance_of "$node_pk")"; cb="$(balance_of "$cb_pk")"
-  if awk "BEGIN{exit !($nb>0 && $cb>0)}"; then :; else
-    warn "$(tr need_funds)"
-    echo
-    show_keys_balances
-    echo -e "\n$(tr press_enter)"; read -r
-    return
+  if ! awk "BEGIN{exit !($nb>0 && $cb>0)}"; then
+    warn "$(tr need_funds)"; echo; show_keys_balances
+    echo -e "\n$(tr press_enter)"; read -r; return
   fi
 
   for f in "$NODE_KP" "$CALLBACK_KP" "$IDENTITY_PEM"; do
@@ -458,6 +655,7 @@ init_onchain() {
 }
 
 pull_image() { info "$(tr pull_image) $IMAGE"; docker pull "$IMAGE"; }
+
 start_container() {
   mkdir -p "$LOGS_DIR"; docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   info "$(tr start_container)"
@@ -483,7 +681,9 @@ remove_container(){ docker rm -f "$CONTAINER" && ok "$(tr container_removed)" ||
 restart_container(){ docker restart "$CONTAINER" && ok "$(tr container_restarted)" || true; }
 status_table()    { echo -e "$(tr status_table):\n"; docker ps -a --filter "name=$CONTAINER" --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'; }
 
-show_logs_follow() { clear; display_logo; hr; echo -e "${clrBold}${clrMag}$(tr logs_follow)${clrReset}\n"; hr
+show_logs_follow() {
+  clear; display_logo; hr
+  echo -e "${clrBold}${clrMag}$(tr logs_follow)${clrReset}\n"; hr
   echo -e "${clrDim}$(tr show_logs_hint)${clrReset}\n"
   docker exec -it "$CONTAINER" sh -lc 'tail -n +1 -f "$(ls -t /usr/arx-node/logs/arx_log_*.log 2>/dev/null | head -1)"' || true
 }
@@ -498,7 +698,6 @@ _get_offset_or_prompt() {
     sanitize_offset
   fi
 
-  # лёгкая валидация: 8–10 цифр выглядит реалистично
   if [[ -n "${OFFSET:-}" ]]; then
     if ! [[ "$OFFSET" =~ ^[0-9]+$ ]]; then
       warn "OFFSET должен содержать только цифры."
@@ -506,36 +705,27 @@ _get_offset_or_prompt() {
       sanitize_offset
     fi
     local len=${#OFFSET}
-    if (( len < 8 || len > 10 )); then
-      warn "OFFSET выглядит странно ($OFFSET). Введите корректный 8–10-значный OFFSET."
-      read -rp "$(tr ask_offset) " OFFSET
-      sanitize_offset
+    if (( len < 8 || len > 12 )); then
+      warn "OFFSET выглядит странно ($OFFSET). Рекомендуется 8–12 цифр."
     fi
   fi
 
   [[ -z "${OFFSET:-}" ]] && { warn "OFFSET пустой — операция отменена."; return 1; }
   return 0
 }
+
 node_status() { clear; display_logo; hr; echo -e "${clrBold}${clrMag}$(tr tools_status)${clrReset}\n"; hr; if _get_offset_or_prompt; then arcium arx-info "$OFFSET" --rpc-url "$RPC_HTTP" || true; fi; }
 node_active() { clear; display_logo; hr; echo -e "${clrBold}${clrMag}$(tr tools_active)${clrReset}\n"; hr; if _get_offset_or_prompt; then arcium arx-active "$OFFSET" --rpc-url "$RPC_HTTP" || true; fi; }
 
 join_cluster() {
   clear; display_logo; hr
   echo -e "${clrBold}${clrMag}$(tr join_cluster_lbl)${clrReset}\n"; hr
-  if ! _get_offset_or_prompt; then
-    echo -e "\n$(tr press_enter)"; read -r; return
-  fi
+  if ! _get_offset_or_prompt; then echo -e "\n$(tr press_enter)"; read -r; return; fi
   local cur_cluster="${CLUSTER_OFFSET:-}" ans
   read -rp "$(tr ask_cluster_offset) ${cur_cluster:+[$cur_cluster]} " ans
   local cluster_offset="${ans:-$cur_cluster}"
-  if [[ -z "$cluster_offset" ]]; then
-    warn "cluster_offset пустой — операция отменена."
-    echo -e "\n$(tr press_enter)"; read -r; return
-  fi
-  if [[ ! -f "$NODE_KP" ]]; then
-    err "Файл ключа ноды не найден: $NODE_KP"
-    echo -e "\n$(tr press_enter)"; read -r; return
-  fi
+  if [[ -z "$cluster_offset" ]]; then warn "cluster_offset пустой — операция отменена."; echo -e "\n$(tr press_enter)"; read -r; return; fi
+  if [[ ! -f "$NODE_KP" ]]; then err "Файл ключа ноды не найден: $NODE_KP"; echo -e "\n$(tr press_enter)"; read -r; return; fi
   info "Joining cluster: node_offset=$OFFSET, cluster_offset=$cluster_offset"
   local key_dir; key_dir="$(dirname "$NODE_KP")"
   if [[ -d "$key_dir" ]]; then
@@ -556,34 +746,25 @@ join_cluster() {
   CLUSTER_OFFSET="$cluster_offset"; save_env
   echo -e "\n$(tr press_enter)"; read -r
 }
+
 propose_join_cluster() {
   clear; display_logo; hr
   echo -e "${clrBold}${clrMag}$(tr propose_join_lbl)${clrReset}\n"; hr
 
-  # 1) Кластер
   local cur_cluster="${CLUSTER_OFFSET:-}" ans
   read -rp "$(tr ask_cluster_offset) ${cur_cluster:+[$cur_cluster]} " ans
   local cluster_offset="${ans:-$cur_cluster}"
   [[ -z "$cluster_offset" ]] && { cluster_offset="10102025"; info "CLUSTER OFFSET не указан — использую по умолчанию: $cluster_offset"; }
 
-  # 2) Чей OFFSET отправляем в заявку (по умолчанию свой)
   ensure_offsets; sanitize_offset
   local default_node="$OFFSET"
   read -rp "$(tr ask_target_node_offset) ${default_node:+[$default_node]} " ans
   local target_node_offset="${ans:-$default_node}"
   target_node_offset="$(printf '%s\n' "$target_node_offset" | sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p')"
-  if [[ -z "$target_node_offset" ]]; then
-    warn "OFFSET ноды пустой — операция отменена."
-    echo -e "\n$(tr press_enter)"; read -r; return
-  fi
+  if [[ -z "$target_node_offset" ]]; then warn "OFFSET ноды пустой — операция отменена."; echo -e "\n$(tr press_enter)"; read -r; return; fi
 
-  # 3) Проверка ключа-авторитета (у владельца кластера должен быть ключ с правами на кластер)
-  if [[ ! -f "$NODE_KP" ]]; then
-    err "Ключ не найден: $NODE_KP"
-    echo -e "\n$(tr press_enter)"; read -r; return
-  fi
+  if [[ ! -f "$NODE_KP" ]]; then err "Ключ не найден: $NODE_KP"; echo -e "\n$(tr press_enter)"; read -r; return; fi
 
-  # 4) Предпроверка: не находится ли эта нода уже в кластере
   info "Проверяю членство ноды $target_node_offset в кластере $cluster_offset..."
   if arcium arx-info "$target_node_offset" --rpc-url "$RPC_HTTP" | awk -v c="$cluster_offset" '
       /^Cluster memberships:/ { inlist=1; next }
@@ -597,7 +778,6 @@ propose_join_cluster() {
     echo -e "\n$(tr press_enter)"; read -r; return
   fi
 
-  # 5) Отправляем заявку
   info "Proposing node_offset=${target_node_offset} to cluster_offset=${cluster_offset}"
   local key_dir; key_dir="$(dirname "$NODE_KP")"
   if [[ -d "$key_dir" ]]; then
@@ -615,7 +795,6 @@ propose_join_cluster() {
       --rpc-url "$RPC_HTTP" && ok "Заявка отправлена"
   fi
 
-  # 6) Сохраним кластер в .env
   CLUSTER_OFFSET="$cluster_offset"; save_env
   echo -e "\n$(tr press_enter)"; read -r
 }
@@ -635,7 +814,7 @@ check_membership_single() {
   echo
 }
 
-# -------------------- Menus --------------------
+# ==================== Menus ====================
 config_menu() {
   while true; do
     clear; display_logo; hr
@@ -671,11 +850,8 @@ config_menu() {
         read -rp "Перезапустить контейнер сейчас? (y/N): " z
         [[ "$z" =~ ^[Yy]$ ]] && restart_container
         ;;
-      0)
-        return
-        ;;
-      *)
-        ;;
+      0) return ;;
+      *) ;;
     esac
     echo -e "\n$(tr press_enter)"; read -r
   done
@@ -693,6 +869,7 @@ tools_menu() {
     echo -e "${clrGreen}6)${clrReset} $(tr check_membership_lbl)"
     echo -e "${clrGreen}7)${clrReset} $(tr show_keys)"
     echo -e "${clrGreen}8)${clrReset} Airdrop (Devnet)"
+    echo -e "${clrGreen}9)${clrReset} Показать сид-фразы"
     echo -e "${clrGreen}0)${clrReset} $(tr m5_exit)"
     hr
     read -rp "> " c
@@ -705,6 +882,7 @@ tools_menu() {
       6) check_membership_single ;;
       7) show_keys_balances ;;
       8) try_airdrop ;;
+      9) show_seed_phrases ;;
       0) return ;;
       *) ;;
     esac
