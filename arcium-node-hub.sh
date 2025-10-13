@@ -706,7 +706,7 @@ _get_offset_or_prompt() {
     fi
     local len=${#OFFSET}
     if (( len < 8 || len > 12 )); then
-      warn "OFFSET выглядит странно ($OFFSET). Рекомендуется 8–12 цифр."
+      warn "OFFSET выглядит странно ($OFFSET). Рекомендуется 8–10 цифр."
     fi
   fi
 
