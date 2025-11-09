@@ -80,7 +80,7 @@ tr() {
       need_root_warn) echo "Some steps need sudo/root. You'll be prompted if needed.";;
       menu_title) echo "Arcium Node — Installer & Manager";;
       m1_prep) echo "Server preparation (Docker, Rust, Solana, Node/Yarn, Anchor, Arcium CLI)";;
-      m2_install) echo "Node install & run / Update to 0.4.0";;
+      m2_install) echo "Node install & run";;
       m2_manage) echo "Container control";;
       m3_config) echo "Configuration";;
       m4_tools) echo "Tools (logs, status, keys)";;
@@ -134,7 +134,7 @@ tr() {
       need_root_warn) echo "Некоторые шаги требуют sudo/root. Вас попросят ввести пароль при необходимости.";;
       menu_title) echo "Arcium Node — установщик и менеджер";;
       m1_prep) echo "Подготовка сервера (Docker, Rust, Solana, Node/Yarn, Anchor, Arcium CLI)";;
-      m2_install) echo "Установка и запуск ноды / Обновление до 0.4.0";;
+      m2_install) echo "Установка и запуск ноды";;
       m2_manage) echo "Управление контейнером";;
       m3_config) echo "Конфигурация";;
       m4_tools) echo "Инструменты (логи, статус, ключи)";;
