@@ -29,13 +29,13 @@ warn() { echo -e "${clrYellow}[WARN]${clrReset} ${*:-}"; }
 err()  { echo -e "${clrRed}[ERROR]${clrReset} ${*:-}"; }
 hr()   { echo -e "${clrDim}────────────────────────────────────────────────────────${clrReset}"; }
 
-SCRIPT_VERSION="0.3.0"
+SCRIPT_VERSION="0.4.0"
 LANG_CHOICE="ru"
 
 # ---------- Defaults / env ----------
 BASE_DIR_DEFAULT="$HOME/arcium-node-setup"
 ENV_FILE_DEFAULT="$HOME/arcium-node-setup/.env"
-IMAGE_DEFAULT="arcium/arx-node:v0.3.0"
+IMAGE_DEFAULT="arcium/arx-node:v0.4.0"
 CONTAINER_DEFAULT="arx-node"
 RPC_DEFAULT_HTTP="https://api.devnet.solana.com"
 RPC_DEFAULT_WSS="wss://api.devnet.solana.com"
@@ -316,9 +316,9 @@ install_arcium_cli() {
 
   # Несколько URL на случай, если один не отвечает
   local ARCUP_URLS=(
-    "https://bin.arcium.com/download/arcup_${target}_0.3.0"
-    "https://bin.arcium.network/download/arcup_${target}_0.3.0"
-    "https://downloads.arcium.com/arcup/${target}/0.3.0/arcup"   # резерв, если у вас есть зеркало
+    "https://bin.arcium.com/download/arcup_${target}_0.4.0"
+    "https://bin.arcium.network/download/arcup_${target}_0.4.0"
+    "https://downloads.arcium.com/arcup/${target}/0.4.0/arcup"   # резерв, если у вас есть зеркало
   )
 
   local got_arcup=""
