@@ -1160,7 +1160,7 @@ main_menu() {
     echo -e "${clrGreen}5)${clrReset} $(tr m4_tools)"
     echo -e "${clrGreen}6)${clrReset} ${MIG_LABEL}"
     echo -e "${clrGreen}7)${clrReset} $(tr manage_remove_node)"
-    echo -e "${clrGreen}8)${clrReset} $(tr m5_exit)
+    echo -e "${clrGreen}8)${clrReset} $(tr m5_exit)"
     hr
     read -rp "> " choice
     case "${choice:-}" in
@@ -1179,3 +1179,4 @@ main_menu() {
 }
 
 main_menu
+
