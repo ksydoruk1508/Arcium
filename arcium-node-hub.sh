@@ -129,6 +129,9 @@ tr() {
       need_funds) echo "Accounts have 0 SOL. Fund them on Devnet and retry.";;
       ask_target_node_offset) echo "Enter the NODE OFFSET to invite (empty = use your own): ";;
       seeds_title) echo "Seed phrases (mnemonic)";;
+      manage_status) echo "Status";;
+      manage_remove_node) echo "Full node removal (container + files)";;
+      cfg_edit_rpc_http) echo "Edit RPC_HTTP";;
     esac;;
     *) case "$k" in
       need_root_warn) echo "Некоторые шаги требуют sudo/root. Вас попросят ввести пароль при необходимости.";;
@@ -183,6 +186,9 @@ tr() {
       need_funds) echo "На аккаунтах 0 SOL. Пополните их на Devnet и повторите.";;
       ask_target_node_offset) echo "Введи OFFSET ноды, которую приглашаешь (пусто — свой): ";;
       seeds_title) echo "Сид-фразы (mnemonic)";;
+      manage_status) echo "Статус";;
+      manage_remove_node) echo "Полное удаление ноды (контейнер + файлы)";;
+      cfg_edit_rpc_http) echo "Изменить RPC_HTTP";;
     esac;;
   esac
 }
@@ -944,6 +950,56 @@ migration_030_to_040() {
   echo -e "\n$(tr press_enter)"; read -r
 }
 
+remove_node_full() {
+  clear; display_logo; hr
+  echo -e "${clrBold}${clrMag}$(tr manage_remove_node)${clrReset}\n"; hr
+  echo "Будут удалены:"
+  echo "  - Docker контейнер:  $CONTAINER"
+  echo "  - Docker образ:      $IMAGE"
+  echo "  - Каталог ноды:      $BASE_DIR"
+  echo "    включая:"
+  echo "      • node-config.toml"
+  echo "      • node-keypair.json"
+  echo "      • callback-kp.json"
+  echo "      • identity.pem"
+  echo "      • arx-node-logs/ (лог-файлы ноды)"
+  echo "      • node-keypair.seed.txt (сид ноды)"
+  echo "      • callback-kp.seed.txt (сид callback)"
+  echo "      • node-pubkey.txt"
+  echo "      • callback-pubkey.txt"
+  echo "      • .env (файл окружения ноды, если существует)"
+  echo
+  echo "После этого восстановить эти ключи из файлов будет невозможно. Нужны заранее сохранённые сид-фразы."
+  echo
+  read -rp "Чтобы ПОЛНОСТЬЮ удалить ноду, напишите YES и нажмите Enter: " ans
+  if [[ "$ans" != "YES" ]]; then
+    warn "Удаление ноды отменено пользователем."
+    echo -e "\n$(tr press_enter)"; read -r
+    return
+  fi
+
+  info "Останавливаю и удаляю контейнер $CONTAINER..."
+  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+
+  info "Пробую удалить Docker-образ $IMAGE..."
+  docker rmi "$IMAGE" >/dev/null 2>&1 || warn "Не удалось удалить образ $IMAGE (возможно, он используется где-то ещё)."
+
+  if [[ -n "${BASE_DIR:-}" && "$BASE_DIR" != "/" && "$BASE_DIR" != "$HOME" && -d "$BASE_DIR" ]]; then
+    info "Удаляю каталог ноды: $BASE_DIR"
+    rm -rf "$BASE_DIR"
+  else
+    warn "Каталог BASE_DIR не найден или выглядит подозрительно: '$BASE_DIR' — пропускаю rm -rf."
+  fi
+
+  if [[ -n "${ENV_FILE:-}" && -f "$ENV_FILE" ]]; then
+    info "Удаляю файл окружения: $ENV_FILE"
+    rm -f "$ENV_FILE" || true
+  fi
+
+  ok "Нода полностью удалена (контейнер, образ и файлы ноды)."
+  echo -e "\n$(tr press_enter)"; read -r
+}
+
 # ==================== Menus ====================
 config_menu() {
   while true; do
@@ -1103,7 +1159,8 @@ main_menu() {
     echo -e "${clrGreen}4)${clrReset} $(tr m3_config)"
     echo -e "${clrGreen}5)${clrReset} $(tr m4_tools)"
     echo -e "${clrGreen}6)${clrReset} ${MIG_LABEL}"
-    echo -e "${clrGreen}7)${clrReset} $(tr m5_exit)"
+    echo -e "${clrGreen}7)${clrReset} $(tr manage_remove_node)"
+    echo -e "${clrGreen}8)${clrReset} $(tr m5_exit)
     hr
     read -rp "> " choice
     case "${choice:-}" in
@@ -1113,7 +1170,8 @@ main_menu() {
       4) config_menu ;;
       5) tools_menu ;;
       6) migration_030_to_040 ;;
-      7) exit 0 ;;
+      7) remove_node_full ;;
+      8) exit 0 ;;
       *) ;;
     esac
     echo -e "\n$(tr press_enter)"; read -r
