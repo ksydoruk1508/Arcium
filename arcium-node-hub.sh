@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =====================================================================
 #  Arcium-Node-Hub — RU/EN interactive installer/manager (Docker)
-#  Version: 0.4.0 (server prep split, seed save/show, RPC editor, robust arcium install)
+#  Version: 0.5.1 (server prep split, seed save/show, RPC editor, robust arcium install, 0.4 → 0.5.1 migration)
 # =====================================================================
 set -Eeuo pipefail
 
@@ -29,13 +29,13 @@ warn() { echo -e "${clrYellow}[WARN]${clrReset} ${*:-}"; }
 err()  { echo -e "${clrRed}[ERROR]${clrReset} ${*:-}"; }
 hr()   { echo -e "${clrDim}────────────────────────────────────────────────────────${clrReset}"; }
 
-SCRIPT_VERSION="0.4.0"
+SCRIPT_VERSION="0.5.1"
 LANG_CHOICE="ru"
 
 # ---------- Defaults / env ----------
 BASE_DIR_DEFAULT="$HOME/arcium-node-setup"
 ENV_FILE_DEFAULT="$HOME/arcium-node-setup/.env"
-IMAGE_DEFAULT="arcium/arx-node:v0.4.0"
+IMAGE_DEFAULT="arcium/arx-node:v0.5.1"
 CONTAINER_DEFAULT="arx-node"
 RPC_DEFAULT_HTTP="https://api.devnet.solana.com"
 RPC_DEFAULT_WSS="wss://api.devnet.solana.com"
@@ -62,6 +62,7 @@ SEED_NODE="$BASE_DIR/node-keypair.seed.txt"
 SEED_CALLBACK="$BASE_DIR/callback-kp.seed.txt"
 PUB_NODE_FILE="$BASE_DIR/node-pubkey.txt"
 PUB_CALLBACK_FILE="$BASE_DIR/callback-pubkey.txt"
+BLS_KP="$BASE_DIR/bls-keypair.json"
 
 # ---------- i18n ----------
 choose_language() {
@@ -129,9 +130,7 @@ tr() {
       need_funds) echo "Accounts have 0 SOL. Fund them on Devnet and retry.";;
       ask_target_node_offset) echo "Enter the NODE OFFSET to invite (empty = use your own): ";;
       seeds_title) echo "Seed phrases (mnemonic)";;
-      manage_status) echo "Status";;
       manage_remove_node) echo "Full node removal (container + files)";;
-      cfg_edit_rpc_http) echo "Edit RPC_HTTP";;
     esac;;
     *) case "$k" in
       need_root_warn) echo "Некоторые шаги требуют sudo/root. Вас попросят ввести пароль при необходимости.";;
@@ -186,9 +185,7 @@ tr() {
       need_funds) echo "На аккаунтах 0 SOL. Пополните их на Devnet и повторите.";;
       ask_target_node_offset) echo "Введи OFFSET ноды, которую приглашаешь (пусто — свой): ";;
       seeds_title) echo "Сид-фразы (mnemonic)";;
-      manage_status) echo "Статус";;
       manage_remove_node) echo "Полное удаление ноды (контейнер + файлы)";;
-      cfg_edit_rpc_http) echo "Изменить RPC_HTTP";;
     esac;;
   esac
 }
@@ -232,6 +229,83 @@ CLUSTER_OFFSET=$CLUSTER_OFFSET
 PUBLIC_IP=$PUBLIC_IP
 EOF
   ok "$(tr cfg_saved) ($ENV_FILE)"
+}
+
+# ---------- Arcium helpers (version / capabilities) ----------
+normalize_arcium_binary() {
+  mkdir -p "$HOME/.arcium/bin"
+
+  local candidates=()
+  local c
+
+  c="$(command -v arcium 2>/dev/null || true)"
+  [[ -n "$c" && -x "$c" ]] && candidates+=("$c")
+
+  c="$(command -v arcium-cli 2>/dev/null || true)"
+  [[ -n "$c" && -x "$c" ]] && candidates+=("$c")
+
+  while IFS= read -r -d '' c; do
+    candidates+=("$c")
+  done < <(find "$HOME" -maxdepth 6 -type f -perm -111 \
+             \( -name 'arcium' -o -name 'arcium-cli' -o -name 'arcium-*' \) \
+             2>/dev/null -print0)
+
+  if [[ ${#candidates[@]} -eq 0 ]]; then
+    warn "Не удалось найти бинарь arcium в \$HOME."
+    return 1
+  fi
+
+  local uniq=()
+  local seen=""
+  for c in "${candidates[@]}"; do
+    if ! grep -qxF "$c" <<<"$seen"; then
+      uniq+=("$c")
+      seen+=$'\n'"$c"
+    fi
+  done
+  candidates=("${uniq[@]}")
+
+  local best=""
+  local best_key=""
+  for c in "${candidates[@]}"; do
+    local out ver
+    out="$("$c" --version 2>/dev/null || true)"
+    ver="$(awk '/arcium-cli/ {print $2}' <<<"$out")"
+    [[ -z "$ver" ]] && continue
+    if [[ "$ver" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+      local major="${BASH_REMATCH[1]}"
+      local minor="${BASH_REMATCH[2]}"
+      local patch="${BASH_REMATCH[3]}"
+      local key
+      key=$(printf '%03d%03d%03d' "$major" "$minor" "$patch")
+      if [[ -z "$best_key" || "$key" > "$best_key" ]]; then
+        best_key="$key"
+        best="$c"
+      fi
+    fi
+  done
+
+  if [[ -z "$best" ]]; then
+    warn "Не удалось определить версию arcium-cli у найденных бинарей."
+    return 1
+  fi
+
+  ln -sf "$best" "$HOME/.arcium/bin/arcium"
+  path_prepend "$HOME/.arcium/bin"
+  hash -r || true
+  ok "Arcium CLI нормализован → $HOME/.arcium/bin/arcium ($(arcium --version 2>/dev/null || echo unknown))"
+}
+
+arcium_supports_gen_bls() {
+  normalize_arcium_binary 2>/dev/null || true
+  ensure_cmd arcium || return 1
+  arcium --help 2>&1 | grep -q 'gen-bls-key' || return 1
+}
+
+arcium_init_supports_bls_flag() {
+  normalize_arcium_binary 2>/dev/null || true
+  ensure_cmd arcium || return 1
+  arcium init-arx-accs --help 2>&1 | grep -q 'bls-keypair-path' || return 1
 }
 
 # ==================== Installers (server prep) ====================
@@ -307,27 +381,44 @@ EOANCH
 }
 
 install_arcium_cli() {
-  # Уже установлен?
+  # 1) Попробуем нормализовать уже существующие установки и использовать их
+  normalize_arcium_binary 2>/dev/null || true
   if ensure_cmd arcium; then
-    ok "Arcium CLI present"
+    ok "Arcium CLI present ($(arcium --version 2>/dev/null || echo unknown))"
     return
   fi
 
-  info "Installing Arcium CLI via arcup (public binary)..."
+  # 2) Официальный инсталлер (предпочтительный путь)
+  info "Installing / updating Arcium tooling via official installer (install.arcium.com)..."
+  if curl --proto '=https' --tlsv1.2 -sSfL https://install.arcium.com/ | bash; then
+    path_prepend "$HOME/.arcium/bin"
+    path_prepend "$HOME/.cargo/bin"
+    grep -q '\.arcium/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/.arcium/bin:$PATH"' >> "$HOME/.bashrc"
+    hash -r || true
+    normalize_arcium_binary 2>/dev/null || true
+    if ensure_cmd arcium; then
+      ok "Arcium CLI ready ($(arcium --version 2>/dev/null || echo unknown))"
+      return
+    fi
+    warn "Arcium installer finished, but CLI not found in PATH — falling back to legacy methods."
+  else
+    warn "install.arcium.com failed — falling back to legacy methods."
+  fi
 
-  # 1) Ставим arcup (паблик CDN)
+  # 3) Legacy: arcup 0.5.1 из публичных бинарей
+  info "Attempting legacy install via arcup binary..."
   mkdir -p "$HOME/.cargo/bin" "$HOME/.arcium/bin" || true
   local target="x86_64_linux"
   [[ $(uname -m) =~ (aarch64|arm64) ]] && target="aarch64_linux"
 
-  # Несколько URL на случай, если один не отвечает
   local ARCUP_URLS=(
-    "https://bin.arcium.com/download/arcup_${target}_0.4.0"
-    "https://bin.arcium.network/download/arcup_${target}_0.4.0"
-    "https://downloads.arcium.com/arcup/${target}/0.4.0/arcup"   # резерв, если у вас есть зеркало
+    "https://bin.arcium.com/download/arcup_${target}_0.5.1"
+    "https://bin.arcium.network/download/arcup_${target}_0.5.1"
+    "https://downloads.arcium.com/arcup/${target}/0.5.1/arcup"
   )
 
   local got_arcup=""
+  local u
   for u in "${ARCUP_URLS[@]}"; do
     info "Fetching arcup: $u"
     if curl -fsSL "$u" -o "$HOME/.cargo/bin/arcup"; then
@@ -340,13 +431,13 @@ install_arcium_cli() {
   done
 
   if [[ -n "$got_arcup" ]]; then
-    # 2) Устанавливаем arcium через arcup
     if "$HOME/.cargo/bin/arcup" install; then
       path_prepend "$HOME/.arcium/bin"
       grep -q '\.arcium/bin' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/.arcium/bin:$PATH"' >> "$HOME/.bashrc"
       hash -r || true
+      normalize_arcium_binary 2>/dev/null || true
       if ensure_cmd arcium; then
-        ok "Arcium CLI ready (via arcup)"
+        ok "Arcium CLI ready (via arcup) ($(arcium --version 2>/dev/null || echo unknown))"
         return
       fi
     else
@@ -356,22 +447,16 @@ install_arcium_cli() {
     warn "Не удалось скачать arcup с публичных зеркал."
   fi
 
-  # 3) Фолбэк: Cargo из git — ТОЛЬКО если есть токен/зеркало (чтобы не было запросов логина)
+  # 4) Опциональный fallback через cargo + приватный/форкнутый репозиторий
   if ensure_cmd cargo; then
     path_prepend "$HOME/.cargo/bin"
     mkdir -p "$HOME/.cargo"
-    # Не спрашивать логин в интерактиве и использовать системный git
     export GIT_ASKPASS=/bin/echo
     if ! grep -q "git-fetch-with-cli" "$HOME/.cargo/config.toml" 2>/dev/null; then
       echo -e "[net]\ngit-fetch-with-cli = true" >> "$HOME/.cargo/config.toml"
     fi
 
-    # Можно задать свои переменные для приватного доступа
-    # ARCIUM_GITHUB_TOKEN=ghp_xxx
-    # ARCIUM_GIT_URL=https://github.com/<you>/arcium-tooling
-    local OFFICIAL_URL="https://github.com/arcium-network/arcium-tooling"
     local CANDIDATE_URLS=()
-
     if [[ -n "${ARCIUM_GIT_URL:-}" ]]; then
       CANDIDATE_URLS+=("$ARCIUM_GIT_URL")
     fi
@@ -382,32 +467,38 @@ install_arcium_cli() {
       fi
     fi
 
-    # Если токена и зеркала нет — не пытаемся интерактивно
-    if [[ ${#CANDIDATE_URLS[@]} -eq 0 ]]; then
-      warn "Arcium CLI не установлен: публичный бинарь недоступен, а git-репо — приватный."
-      warn "Варианты: установи токен ARCIUM_GITHUB_TOKEN или укажи публичный форк ARCIUM_GIT_URL и запусти снова."
-      return
-    fi
-
-    info "Installing Arcium CLI via cargo (private/mirrors)..."
-    local ok_installed=""
-    for url in "${CANDIDATE_URLS[@]}"; do
-      info "cargo install --git $url arcium"
-      if cargo install --git "$url" --locked --force arcium; then
-        ok_installed="yes"
-        break
+    if [[ ${#CANDIDATE_URLS[@]} -gt 0 ]]; then
+      info "Installing Arcium CLI via cargo (using provided git URL/token)..."
+      local ok_installed=""
+      local url
+      for url in "${CANDIDATE_URLS[@]}"; do
+        info "cargo install --git $url arcium"
+        if cargo install --git "$url" --locked --force arcium; then
+          ok_installed="yes"
+          break
+        else
+          warn "cargo install failed for: $url"
+        fi
+      done
+      if [[ -n "$ok_installed" ]]; then
+        ok "Arcium CLI ready (via cargo)"
+        normalize_arcium_binary 2>/dev/null || true
+        if ensure_cmd arcium; then
+          ok "Arcium CLI present ($(arcium --version 2>/dev/null || echo unknown))"
+          return
+        fi
       else
-        warn "cargo install failed for: $url"
+        warn "Arcium CLI установить не удалось через cargo."
       fi
-    done
-
-    if [[ -n "$ok_installed" ]]; then
-      ok "Arcium CLI ready (via cargo)"
     else
-      warn "Arcium CLI установить не удалось. Проверь доступ к репозиторию или используйте arcup из публичного зеркала."
+      warn "Нет ARCIUM_GIT_URL / ARCIUM_GITHUB_TOKEN для git-установки Arcium CLI."
     fi
   else
     warn "Cargo недоступен — пропускаю git-установку Arcium CLI."
+  fi
+
+  if ! ensure_cmd arcium; then
+    warn "Arcium CLI так и не найден в системе. Некоторые функции скрипта работать не будут."
   fi
 }
 
@@ -440,16 +531,12 @@ ask_config() {
   save_env
 }
 
-# Попытка стабильно вытащить сид-фразу из stdout solana-keygen new
 _extract_mnemonic_from_file() {
   local file="$1"
-  # Берём последние строки и ищем 12–24 слов, нижний регистр
   awk '
     {
       line=$0
-      # нормализуем пробелы
       gsub(/[ \t]+/, " ", line)
-      # 12 или больше слов a-z
       n=split(line, w, " ")
       if (n>=12 && n<=24) {
         ok=1
@@ -468,7 +555,6 @@ generate_keys() {
   if ! ensure_cmd solana-keygen; then err "solana-keygen not found. Install Solana CLI first."; exit 1; fi
   mkdir -p "$BASE_DIR"
 
-  # Node key
   if [[ ! -f "$NODE_KP" || ! -s "$NODE_KP" ]]; then
     local tmpout="$BASE_DIR/.node_keygen.out.txt"
     solana-keygen new --no-bip39-passphrase --outfile "$NODE_KP" --force >"$tmpout" 2>&1 || true
@@ -482,7 +568,6 @@ generate_keys() {
     rm -f "$tmpout" || true
   fi
 
-  # Callback key
   if [[ ! -f "$CALLBACK_KP" || ! -s "$CALLBACK_KP" ]]; then
     local tmpout2="$BASE_DIR/.callback_keygen.out.txt"
     solana-keygen new --no-bip39-passphrase --outfile "$CALLBACK_KP" --force >"$tmpout2" 2>&1 || true
@@ -496,10 +581,8 @@ generate_keys() {
     rm -f "$tmpout2" || true
   fi
 
-  # Identity PEM
   [[ -f "$IDENTITY_PEM" ]] || openssl genpkey -algorithm Ed25519 -out "$IDENTITY_PEM" >/dev/null 2>&1 || true
 
-  # Сохраним pubkeys
   (solana address --keypair "$NODE_KP" 2>/dev/null || echo "N/A") > "$PUB_NODE_FILE"
   (solana address --keypair "$CALLBACK_KP" 2>/dev/null || echo "N/A") > "$PUB_CALLBACK_FILE"
   chmod 600 "$PUB_NODE_FILE" "$PUB_CALLBACK_FILE" || true
@@ -558,7 +641,6 @@ try_airdrop() {
   show_keys_balances
 }
 
-# Обновить RPC в существующем node-config.toml
 update_rpc_endpoints() {
   local cfg="${CFG_FILE:-$BASE_DIR/node-config.toml}"
   local envf="${ENV_FILE:-$BASE_DIR/.env}"
@@ -581,7 +663,6 @@ update_rpc_endpoints() {
   ok "RPC обновлены в $cfg"
 }
 
-# Показ сид-фраз (с маской + опция раскрыть)
 show_seed_phrases() {
   clear; display_logo; hr
   echo -e "${clrBold}${clrMag}$(tr seeds_title)${clrReset}\n"; hr
@@ -624,7 +705,6 @@ init_onchain() {
   clear; display_logo; hr; info "$(tr init_onchain)"
   solana config set --url "$RPC_HTTP" >/dev/null 2>&1 || true
 
-  # Require funds
   local node_pk cb_pk nb cb
   node_pk="$(solana address --keypair "$NODE_KP" 2>/dev/null || true)"
   cb_pk="$(solana address --keypair "$CALLBACK_KP" 2>/dev/null || true)"
@@ -638,15 +718,23 @@ init_onchain() {
     [[ -f "$f" ]] || { err "Не найден файл: $f"; echo -e "\n$(tr press_enter)"; read -r; return; }
   done
 
+  local extra_bls_args=()
+  if [[ -f "$BLS_KP" && -s "$BLS_KP" ]] && arcium_init_supports_bls_flag; then
+    extra_bls_args+=( --bls-keypair-path "$BLS_KP" )
+  fi
+
   local key_dir; key_dir="$(dirname "$NODE_KP")"
   if [[ -d "$key_dir" ]]; then
-    ( cd "$key_dir" && arcium init-arx-accs \
+    (
+      cd "$key_dir" && arcium init-arx-accs \
         --keypair-path "$NODE_KP" \
         --callback-keypair-path "$CALLBACK_KP" \
         --peer-keypair-path "$IDENTITY_PEM" \
         --node-offset "$OFFSET" \
         --ip-address "$PUBLIC_IP" \
-        --rpc-url "$RPC_HTTP" )
+        --rpc-url "$RPC_HTTP" \
+        "${extra_bls_args[@]}"
+    )
     cd "$HOME" || true
   else
     arcium init-arx-accs \
@@ -655,7 +743,8 @@ init_onchain() {
       --peer-keypair-path "$IDENTITY_PEM" \
       --node-offset "$OFFSET" \
       --ip-address "$PUBLIC_IP" \
-      --rpc-url "$RPC_HTTP"
+      --rpc-url "$RPC_HTTP" \
+      "${extra_bls_args[@]}"
   fi
   ok "$(tr init_done)"
 }
@@ -665,23 +754,45 @@ pull_image() { info "$(tr pull_image) $IMAGE"; docker pull "$IMAGE"; }
 start_container() {
   mkdir -p "$LOGS_DIR"; docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
   info "$(tr start_container)"
-  docker run -d \
-    --name "$CONTAINER" \
-    -e NODE_IDENTITY_FILE=/usr/arx-node/node-keys/node_identity.pem \
-    -e NODE_KEYPAIR_FILE=/usr/arx-node/node-keys/node_keypair.json \
-    -e OPERATOR_KEYPAIR_FILE=/usr/arx-node/node-keys/operator_keypair.json \
-    -e CALLBACK_AUTHORITY_KEYPAIR_FILE=/usr/arx-node/node-keys/callback_authority_keypair.json \
-    -e NODE_CONFIG_PATH=/usr/arx-node/arx/node_config.toml \
-    -v "$CFG_FILE:/usr/arx-node/arx/node_config.toml" \
-    -v "$NODE_KP:/usr/arx-node/node-keys/node_keypair.json:ro" \
-    -v "$NODE_KP:/usr/arx-node/node-keys/operator_keypair.json:ro" \
-    -v "$CALLBACK_KP:/usr/arx-node/node-keys/callback_authority_keypair.json:ro" \
-    -v "$IDENTITY_PEM:/usr/arx-node/node-keys/node_identity.pem:ro" \
-    -v "$LOGS_DIR:/usr/arx-node/logs" \
-    -p 8080:8080 \
-    "$IMAGE"
+
+  if [[ -f "$BLS_KP" ]]; then
+    docker run -d \
+      --name "$CONTAINER" \
+      --restart unless-stopped \
+      -e NODE_IDENTITY_FILE=/usr/arx-node/node-keys/node_identity.pem \
+      -e NODE_KEYPAIR_FILE=/usr/arx-node/node-keys/node_keypair.json \
+      -e CALLBACK_AUTHORITY_KEYPAIR_FILE=/usr/arx-node/node-keys/callback_authority_keypair.json \
+      -e BLS_PRIVATE_KEY_FILE=/usr/arx-node/node-keys/bls_keypair.json \
+      -e NODE_CONFIG_PATH=/usr/arx-node/arx/node_config.toml \
+      -v "$CFG_FILE:/usr/arx-node/arx/node_config.toml" \
+      -v "$NODE_KP:/usr/arx-node/node-keys/node_keypair.json:ro" \
+      -v "$CALLBACK_KP:/usr/arx-node/node-keys/callback_authority_keypair.json:ro" \
+      -v "$IDENTITY_PEM:/usr/arx-node/node-keys/node_identity.pem:ro" \
+      -v "$BLS_KP:/usr/arx-node/node-keys/bls_keypair.json:ro" \
+      -v "$LOGS_DIR:/usr/arx-node/logs" \
+      -p 8080:8080 \
+      "$IMAGE"
+  else
+    docker run -d \
+      --name "$CONTAINER" \
+      -e NODE_IDENTITY_FILE=/usr/arx-node/node-keys/node_identity.pem \
+      -e NODE_KEYPAIR_FILE=/usr/arx-node/node-keys/node_keypair.json \
+      -e OPERATOR_KEYPAIR_FILE=/usr/arx-node/node-keys/operator_keypair.json \
+      -e CALLBACK_AUTHORITY_KEYPAIR_FILE=/usr/arx-node/node-keys/callback_authority_keypair.json \
+      -e NODE_CONFIG_PATH=/usr/arx-node/arx/node_config.toml \
+      -v "$CFG_FILE:/usr/arx-node/arx/node_config.toml" \
+      -v "$NODE_KP:/usr/arx-node/node-keys/node_keypair.json:ro" \
+      -v "$NODE_KP:/usr/arx-node/node-keys/operator_keypair.json:ro" \
+      -v "$CALLBACK_KP:/usr/arx-node/node-keys/callback_authority_keypair.json:ro" \
+      -v "$IDENTITY_PEM:/usr/arx-node/node-keys/node_identity.pem:ro" \
+      -v "$LOGS_DIR:/usr/arx-node/logs" \
+      -p 8080:8080 \
+      "$IMAGE"
+  fi
+
   ok "$(tr container_started)"
 }
+
 stop_container()  { docker stop "$CONTAINER" && ok "$(tr container_stopped)" || true; }
 remove_container(){ docker rm -f "$CONTAINER" && ok "$(tr container_removed)" || true; }
 restart_container(){ docker restart "$CONTAINER" && ok "$(tr container_restarted)" || true; }
@@ -824,25 +935,20 @@ migration_030_to_040() {
   clear; display_logo; hr
   echo -e "${clrBold}${clrMag}Миграция 0.3.0 → 0.4.0${clrReset}\n"; hr
 
-  # 1) Остановить/удалить старый контейнер
   info "Отключаю старый контейнер arx-node..."
   docker rm -f arx-node 2>/dev/null || true
 
-  # 2) Загрузить образ 0.4.0
   local IMG="arcium/arx-node:v0.4.0"
   info "Тяну образ ${IMG}..."
   docker pull "${IMG}"
 
-  # 3) Подготовить PATH в ~/.bashrc (на будущее), текущую сессию пока не трогаем
   info "Готовлю PATH для arcium (для будущих сессий)…"
   if ! grep -q 'export PATH="$HOME/.arcium/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null; then
     sed -i '1iexport PATH="$HOME/.arcium/bin:$PATH"' "$HOME/.bashrc"
   fi
 
-  # 4) Переименовать старый cargo-бинарь (если был)
   mv "$HOME/.cargo/bin/arcium" "$HOME/.cargo/bin/arcium.old" 2>/dev/null || true
 
-  # 5) Установить через arcup (при необходимости — скачать arcup)
   if [[ ! -x "$HOME/.cargo/bin/arcup" ]]; then
     warn "arcup не найден. Скачиваю…"
     mkdir -p "$HOME/.cargo/bin"
@@ -855,15 +961,12 @@ migration_030_to_040() {
   info "Устанавливаю Arcium CLI через arcup…"
   "$HOME/.cargo/bin/arcup" install
 
-  # === Нормализация бинаря после arcup install ===
   mkdir -p "$HOME/.arcium/bin"
 
-  # 1) если есть arcium-cli — линкуем на arcium
   if [[ -x "$HOME/.arcium/bin/arcium-cli" && ! -e "$HOME/.arcium/bin/arcium" ]]; then
     ln -sf "$HOME/.arcium/bin/arcium-cli" "$HOME/.arcium/bin/arcium"
   fi
 
-  # 2) если arcup положил версионный бинарь в ~/.cargo/bin (например arcium-0.4.0) — линкуем
   if [[ ! -e "$HOME/.arcium/bin/arcium" ]]; then
     if [[ -x "$HOME/.cargo/bin/arcium-0.4.0" ]]; then
       ln -sf "$HOME/.cargo/bin/arcium-0.4.0" "$HOME/.arcium/bin/arcium"
@@ -871,7 +974,6 @@ migration_030_to_040() {
     fi
   fi
 
-  # 3) если всё ещё нет — ищем глубже по HOME (arcium, arcium-cli, arcium-*)
   if [[ ! -x "$HOME/.arcium/bin/arcium" ]]; then
     FOUND="$( (command -v arcium || true; command -v arcium-cli || true; \
       find "$HOME" -maxdepth 8 -type f -perm -111 \( -name 'arcium' -o -name 'arcium-cli' -o -name 'arcium-*' \) 2>/dev/null) \
@@ -884,7 +986,6 @@ migration_030_to_040() {
     fi
   fi
 
-  # 4) добавить PATH для текущей сессии и проверить версию
   export PATH="$HOME/.arcium/bin:$PATH"
   hash -r
   local ARCIUM_BIN="$HOME/.arcium/bin/arcium"
@@ -893,7 +994,6 @@ migration_030_to_040() {
     echo -e "\n$(tr press_enter)"; read -r; return
   fi
 
-  # 7) Ожидаем строгий вывод версии
   if "$ARCIUM_BIN" --version 2>/dev/null | grep -qE '^arcium-cli 0\.4\.0$'; then
     ok "Версия подтверждена: arcium-cli 0.4.0"
   else
@@ -901,7 +1001,6 @@ migration_030_to_040() {
     ( "$ARCIUM_BIN" --version 2>&1 || true )
   fi
 
-  # Пути
   local BASE="$HOME/arcium-node-setup"
   local CFG="$BASE/node-config.toml"
   local NODE_KP="$BASE/node-keypair.json"
@@ -910,7 +1009,6 @@ migration_030_to_040() {
   local LOGS="$BASE/arx-node-logs"
   mkdir -p "$BASE" "$LOGS"
 
-  # 8) Инициализация on-chain с запросом OFFSET (8–10 цифр)
   local OFFSET_IN=""
   while true; do
     read -rp "Введи OFFSET (8–10 цифр): " OFFSET_IN
@@ -928,7 +1026,6 @@ migration_030_to_040() {
     --ip-address "$(curl -4 -s https://ipecho.net/plain)" \
     --rpc-url "https://api.devnet.solana.com"
 
-  # 9) Запуск контейнера 0.4.0 (restart unless-stopped)
   info "Запускаю контейнер arx-node c образа ${IMG}…"
   docker run -d --name arx-node --restart unless-stopped \
     -e NODE_IDENTITY_FILE=/usr/arx-node/node-keys/node_identity.pem \
@@ -950,6 +1047,107 @@ migration_030_to_040() {
   echo -e "\n$(tr press_enter)"; read -r
 }
 
+migration_040_to_050() {
+  clear; display_logo; hr
+  echo -e "${clrBold}${clrMag}Миграция 0.4.0 → 0.5.1${clrReset}\n"; hr
+
+  mkdir -p "$BASE_DIR" "$LOGS_DIR"
+
+  for f in "$NODE_KP" "$CALLBACK_KP" "$IDENTITY_PEM"; do
+    if [[ ! -f "$f" ]]; then
+      err "Не найден ключ: $f. Миграция невозможна. Убедись, что запускаешь на старой ноде 0.4."
+      echo -e "\n$(tr press_enter)"; read -r
+      return
+    fi
+  done
+
+  info "Обновляю Arcium CLI и ARX node через install.arcium.com..."
+  if ! curl --proto '=https' --tlsv1.2 -sSfL https://install.arcium.com/ | bash; then
+    warn "install.arcium.com завершился с ошибкой. Проверь сеть/скрипт и повтори."
+  fi
+
+  # Приводим бинарь arcium к самой свежей версии
+  normalize_arcium_binary 2>/dev/null || true
+
+  if ! ensure_cmd arcium; then
+    err "Arcium CLI не найден после обновления. Проверь установку."
+    echo -e "\n$(tr press_enter)"; read -r
+    return
+  fi
+  info "Использую Arcium CLI: $(arcium --version 2>/dev/null || echo unknown)"
+
+  # BLS — только если команда поддерживается, без фатала
+  if [[ ! -f "$BLS_KP" || ! -s "$BLS_KP" ]]; then
+    if arcium_supports_gen_bls; then
+      info "Генерирую BLS-ключ (bls-keypair.json) для ноды..."
+      (
+        cd "$BASE_DIR"
+        arcium gen-bls-key "$(basename "$BLS_KP")"
+      ) || {
+        warn "Не удалось сгенерировать BLS-ключ. Продолжаю миграцию без BLS (если нода это позволяет)."
+      }
+    else
+      warn "Текущая версия Arcium CLI не поддерживает gen-bls-key. Пропускаю генерацию BLS-ключа."
+    fi
+  else
+    ok "Найден существующий BLS-ключ: $BLS_KP"
+  fi
+
+  ensure_offsets
+  if [[ -z "${OFFSET:-}" ]]; then
+    read -rp "$(tr ask_offset) " OFFSET
+    sanitize_offset
+  fi
+
+  if [[ -z "${RPC_HTTP:-}" ]]; then
+    RPC_HTTP="$RPC_DEFAULT_HTTP"
+  fi
+
+  if [[ -z "${PUBLIC_IP:-}" ]]; then
+    PUBLIC_IP=$(curl -4 -s https://ipecho.net/plain || echo "0.0.0.0")
+  fi
+
+  save_env
+
+  if [[ ! -f "$CFG_FILE" ]]; then
+    warn "Файл node-config.toml не найден — создаю по шаблону..."
+    write_config
+  fi
+
+  info "Переинициализирую on-chain аккаунты ноды (init-arx-accs)..."
+  (
+    cd "$BASE_DIR"
+    local cmd=(arcium init-arx-accs
+      --keypair-path "$NODE_KP"
+      --callback-keypair-path "$CALLBACK_KP"
+      --peer-keypair-path "$IDENTITY_PEM"
+      --node-offset "$OFFSET"
+      --ip-address "$PUBLIC_IP"
+      --rpc-url "$RPC_HTTP"
+    )
+
+    if [[ -f "$BLS_KP" && -s "$BLS_KP" ]] && arcium_init_supports_bls_flag; then
+      cmd+=( --bls-keypair-path "$BLS_KP" )
+    fi
+
+    "${cmd[@]}"
+  ) || warn "init-arx-accs вернул ошибку. Если это конфликт / повторная инициализация — проверь вывод выше."
+
+  info "Переключаюсь на новый образ arcium/arx-node:v0.5.1..."
+  IMAGE="arcium/arx-node:v0.5.1"
+  save_env
+
+  info "Останавливаю и удаляю старый контейнер $CONTAINER..."
+  docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+
+  pull_image
+  start_container
+  status_table
+
+  ok "Миграция 0.4.0 → 0.5.1 завершена."
+  echo -e "\n$(tr press_enter)"; read -r
+}
+
 remove_node_full() {
   clear; display_logo; hr
   echo -e "${clrBold}${clrMag}$(tr manage_remove_node)${clrReset}\n"; hr
@@ -968,6 +1166,7 @@ remove_node_full() {
   echo "      • node-pubkey.txt"
   echo "      • callback-pubkey.txt"
   echo "      • .env (файл окружения ноды, если существует)"
+  echo "      • bls-keypair.json (BLS-ключ ноды)"
   echo
   echo "После этого восстановить эти ключи из файлов будет невозможно. Нужны заранее сохранённые сид-фразы."
   echo
@@ -1114,8 +1313,23 @@ install_and_run_menu() {
   ask_config
   generate_keys
   write_config
+
+  # BLS для новых нод 0.5.1 (только если CLI умеет gen-bls-key)
+  if [[ ! -f "$BLS_KP" || ! -s "$BLS_KP" ]]; then
+    if arcium_supports_gen_bls; then
+      info "Генерирую BLS-ключ (bls-keypair.json) для новой ноды..."
+      (
+        cd "$BASE_DIR"
+        arcium gen-bls-key "$(basename "$BLS_KP")"
+      ) || warn "Не удалось сгенерировать BLS-ключ — продолжу в legacy-режиме без BLS."
+    else
+      warn "Текущая версия Arcium CLI не поддерживает gen-bls-key. Нода будет работать без BLS."
+    fi
+  else
+    ok "Найден существующий BLS-ключ: $BLS_KP"
+  fi
+
   pull_image
-  # funding loop
   while true; do
     local node_pk cb_pk nb cb
     node_pk="$(solana address --keypair "$NODE_KP" 2>/dev/null || echo N/A)"
@@ -1146,10 +1360,13 @@ main_menu() {
   while true; do
     clear; display_logo; hr
     local MIG_LABEL
+    local MIG_LABEL2
     if [[ "$LANG_CHOICE" == "en" ]]; then
       MIG_LABEL="Migration 0.3.0 → 0.4.0"
+      MIG_LABEL2="Migration 0.4.0 → 0.5.1"
     else
       MIG_LABEL="Миграция 0.3.0 → 0.4.0"
+      MIG_LABEL2="Миграция 0.4.0 → 0.5.1"
     fi
 
     echo -e "${clrBold}${clrMag}$(tr menu_title)${clrReset} ${clrDim}(v${SCRIPT_VERSION})${clrReset}\n"
@@ -1159,8 +1376,9 @@ main_menu() {
     echo -e "${clrGreen}4)${clrReset} $(tr m3_config)"
     echo -e "${clrGreen}5)${clrReset} $(tr m4_tools)"
     echo -e "${clrGreen}6)${clrReset} ${MIG_LABEL}"
-    echo -e "${clrGreen}7)${clrReset} $(tr manage_remove_node)"
-    echo -e "${clrGreen}8)${clrReset} $(tr m5_exit)"
+    echo -e "${clrGreen}7)${clrReset} ${MIG_LABEL2}"
+    echo -e "${clrGreen}8)${clrReset} $(tr manage_remove_node)"
+    echo -e "${clrGreen}9)${clrReset} $(tr m5_exit)"
     hr
     read -rp "> " choice
     case "${choice:-}" in
@@ -1170,8 +1388,9 @@ main_menu() {
       4) config_menu ;;
       5) tools_menu ;;
       6) migration_030_to_040 ;;
-      7) remove_node_full ;;
-      8) exit 0 ;;
+      7) migration_040_to_050 ;;
+      8) remove_node_full ;;
+      9) exit 0 ;;
       *) ;;
     esac
     echo -e "\n$(tr press_enter)"; read -r
@@ -1179,4 +1398,3 @@ main_menu() {
 }
 
 main_menu
-
