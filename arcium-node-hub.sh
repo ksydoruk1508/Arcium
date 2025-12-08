@@ -918,16 +918,28 @@ propose_join_cluster() {
 
 check_membership_single() {
   ensure_offsets; sanitize_offset
-  local cur_cluster="${CLUSTER_OFFSET:-}" ans; read -rp "$(tr ask_cluster_offset) ${cur_cluster:+[$cur_cluster]} " ans
-  local cluster_offset="${ans:-$cur_cluster}"; [[ -z "$cluster_offset" ]] && { warn "cluster_offset пустой"; return; }
-  local node_off; read -rp "$(tr ask_offset) " node_off; node_off="$(printf '%s\n' "$node_off" | sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p')"
+
+  local cur_cluster="${CLUSTER_OFFSET:-}" ans
+  read -rp "$(tr ask_cluster_offset) ${cur_cluster:+[$cur_cluster]} " ans
+  local cluster_offset="${ans:-$cur_cluster}"
+  [[ -z "$cluster_offset" ]] && { warn "cluster_offset пустой"; return; }
+
+  local node_off
+  read -rp "$(tr ask_offset) " node_off
+  node_off="$(printf '%s\n' "$node_off" | sed -n 's/[^0-9]*\([0-9][0-9]*\).*/\1/p')"
   [[ -z "$node_off" ]] && { warn "node offset пустой"; return; }
-  echo; info "Checking node $node_off in cluster $cluster_offset..."
-  if arcium arx-info "$node_off" --rpc-url "$RPC_HTTP" | awk -v c="$cluster_offset" '
-    /^Cluster memberships:/ { inlist=1; next }
-    inlist { if ($0 ~ /^[[:space:]]*$/) { inlist=0; next } if (index($0, c)) { found=1 } }
-    END { exit(found ? 0 : 1) }
-  ' >/dev/null; then ok "Node $node_off is IN cluster $cluster_offset"; else warn "Node $node_off is NOT in cluster $cluster_offset (or not found)"; fi
+
+  echo
+  info "Checking node $node_off in cluster $cluster_offset..."
+
+  # Для новых версий arcium-cli (0.5.x), где есть строка Active Cluster: ... Offset: XXXX
+  if arcium arx-info "$node_off" --rpc-url "$RPC_HTTP" 2>/dev/null \
+       | grep -q "Offset: ${cluster_offset}"; then
+    ok "Node $node_off is IN cluster $cluster_offset"
+  else
+    warn "Node $node_off is NOT in cluster $cluster_offset (or not found)"
+  fi
+
   echo
 }
 
